@@ -266,28 +266,26 @@ jobs:
 
           echo "Extracting CPU once..."
           cpu_tmp=$(mktemp -d)
-          unzip "$cpu_zip" -d "$cpu_tmp"
+          unzip "$cpu_zip" -d "$cpu_tmp" # Unzip into cpu_temp
 
           for hip_zip in artifact/llama-bin-win-hip-*-x64.zip; do
-            if [[ "$hip_zip" == "$cpu_zip" ]]; then
+            if [[ "$hip_zip" == "$cpu_zip" ]]; then # Skip processing cpu_zip again
                   continue
             fi
-            
+
             echo "Processing $(basename "$hip_zip")"
 
-            tmp_dir=$(mktemp -d)
-            unzip "$hip_zip" -d "$tmp_dir"
+            realpath_target_zip=$(realpath "$hip_zip")
+            (cd "$cpu_tmp" && zip -r "$realpath_target_zip" .)
 
-            echo "Merging CPU files..."
-            cp -rn "$cpu_tmp"/* "$tmp_dir"/  # -n prevents overwriting HIP files with CPU ones
+            base_name=$(basename "$hip_zip" .zip)
+            zip_name="llama-${{ steps.tag.outputs.name }}-${base_name#llama-}.zip"
+            echo "Moving $hip_zip to release/$zip_name"
+            mv "$hip_zip" "release/$zip_name"
 
-            final_name=$(basename "$hip_zip")
-            (cd "$tmp_dir" && zip -r "/release/$final_name" .)
-
-            rm -rf "$tmp_dir"
           done
 
-          rm -rf "$cpu_tmp"
+          rm -rf "$cpu_tmp" # Clean up cpu temp dir
 
       - name: Create release
         id: create_release
