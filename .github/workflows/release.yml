@@ -87,118 +87,145 @@ jobs:
           path: llama-bin-win-cpu-${{ matrix.arch }}.zip
           name: llama-bin-win-cpu-${{ matrix.arch }}.zip
 
-  windows-hip:
-    runs-on: windows-2022
+windows-hip:
+  runs-on: windows-2022
 
-    env:
-      HIPSDK_INSTALLER_VERSION: "26.Q1"
+  env:
+    HIPSDK_INSTALLER_VERSION: "26.Q1"
 
-    strategy:
-      matrix:
-        include:
-          - name: "radeon"
-            gpu_targets: "gfx1201"
+  strategy:
+    matrix:
+      include:
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "BUILD_SHARED_LIBS"
 
-    steps:
-      - name: Clone
-        id: checkout
-        uses: actions/checkout@v6
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "LLAMA_CURL"
 
-      - name: Grab rocWMMA package
-        id: grab_rocwmma
-        run: |
-          curl -o rocwmma.deb "https://repo.radeon.com/rocm/apt/7.2/pool/main/r/rocwmma-dev/rocwmma-dev_2.2.0.70200-43~24.04_amd64.deb"
-          7z x rocwmma.deb
-          7z x data.tar
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "GGML_CUDA_FORCE_CUBLAS"
 
-      - name: Cache ROCm Installation
-        id: cache-rocm
-        uses: actions/cache@v5
-        with:
-          path: C:\Program Files\AMD\ROCm
-          key: rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "GGML_HIP_GRAPHS"
 
-      - name: ccache
-        uses: ggml-org/ccache-action@v1.2.21
-        with:
-          key: windows-latest-hip-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ matrix.name }}-x64
-          evict-old-files: 1d
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "GGML_CUDA_FORCE_MMQ"
 
-      - name: Install ROCm
-        if: steps.cache-rocm.outputs.cache-hit != 'true'
-        id: depends
-        run: |
-          $ErrorActionPreference = "Stop"
-          write-host "Downloading AMD HIP SDK Installer"
-          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ env.HIPSDK_INSTALLER_VERSION }}-Win11-For-HIP.exe" -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
-          write-host "Installing AMD HIP SDK"
-          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
-          $completed = $proc.WaitForExit(600000)
-          if (-not $completed) {
-              Write-Error "ROCm installation timed out after 10 minutes. Killing the process"
-              $proc.Kill()
-              exit 1
+        - name: "radeon"
+          gpu_targets: "gfx1201"
+          exclude_flag: "HIP_PLATFORM"
+
+  steps:
+    - name: Clone
+      uses: actions/checkout@v6
+
+    - name: Grab rocWMMA package
+      run: |
+        curl -o rocwmma.deb "https://repo.radeon.com/rocm/apt/7.2/pool/main/r/rocwmma-dev/rocwmma-dev_2.2.0.70200-43~24.04_amd64.deb"
+        7z x rocwmma.deb
+        7z x data.tar
+
+    - name: Cache ROCm Installation
+      id: cache-rocm
+      uses: actions/cache@v5
+      with:
+        path: C:\Program Files\AMD\ROCm
+        key: rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
+
+    - name: ccache
+      uses: ggml-org/ccache-action@v1.2.21
+      with:
+        key: windows-hip-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ matrix.variant }}-${{ matrix.name }}
+        evict-old-files: 1d
+
+    - name: Install ROCm
+      if: steps.cache-rocm.outputs.cache-hit != 'true'
+      run: |
+        $ErrorActionPreference = "Stop"
+        Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ env.HIPSDK_INSTALLER_VERSION }}-Win11-For-HIP.exe" -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
+        $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
+        $proc.WaitForExit(600000)
+        if ($proc.ExitCode -ne 0) { exit 1 }
+
+    - name: Verify ROCm
+      run: |
+        $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
+        if (-not $clangPath) { exit 1 }
+        & $clangPath.FullName --version
+
+    - name: Build
+      run: |
+        $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
+        $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
+
+        # Base flags (always included)
+        $BASE_FLAGS = @(
+          "-DGGML_BACKEND_DL=ON",
+          "-DGGML_NATIVE=OFF",
+          "-DGGML_CPU=OFF",
+          "-DGPU_TARGETS=${{ matrix.gpu_targets }}",
+          "-DGGML_HIP_ROCWMMA_FATTN=ON",
+          "-DGGML_HIP=ON",
+          "-DLLAMA_BUILD_TESTS=OFF",
+          "-DLLAMA_BUILD_BORINGSSL=ON"
+        )
+
+        # Optional flags (we will remove ONE of these)
+        $OPTIONAL_FLAGS = @{
+          "BUILD_SHARED_LIBS"        = "-DBUILD_SHARED_LIBS=ON"
+          "LLAMA_CURL"               = "-DLLAMA_CURL=OFF"
+          "GGML_CUDA_FORCE_CUBLAS"   = "-DGGML_CUDA_FORCE_CUBLAS=OFF"
+          "GGML_HIP_GRAPHS"          = "-DGGML_HIP_GRAPHS=ON"
+          "GGML_CUDA_FORCE_MMQ"      = "-DGGML_CUDA_FORCE_MMQ=ON"
+          "HIP_PLATFORM"             = "-DHIP_PLATFORM=amd"
+        }
+
+        $EXCLUDE = "${{ matrix.exclude_flag }}"
+
+        # Build final flag list
+        $FINAL_FLAGS = @()
+        foreach ($key in $OPTIONAL_FLAGS.Keys) {
+          if ($key -ne $EXCLUDE) {
+            $FINAL_FLAGS += $OPTIONAL_FLAGS[$key]
+          } else {
+            Write-Host "Excluding flag: $key"
           }
-          if ($proc.ExitCode -ne 0) {
-              Write-Error "ROCm installation failed with exit code $($proc.ExitCode)"
-              exit 1
-          }
-          write-host "Completed AMD HIP SDK installation"
+        }
 
-      - name: Verify ROCm
-        id: verify
-        run: |
-          # Find and test ROCm installation
-          $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
-          if (-not $clangPath) {
-            Write-Error "ROCm installation not found"
-            exit 1
-          }
-          & $clangPath.FullName --version
+        $ALL_FLAGS = $BASE_FLAGS + $FINAL_FLAGS
 
-      - name: Build
-        id: cmake_build
-        run: |
-          $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
-          $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
-          cmake -G "Unix Makefiles" -B build -S . `
-            -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
-            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
-            -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.0/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DGGML_BACKEND_DL=ON `
-            -DGGML_NATIVE=OFF `
-            -DGGML_CPU=OFF `
-            -DGPU_TARGETS="${{ matrix.gpu_targets }}" `
-            -DGGML_HIP_ROCWMMA_FATTN=ON `
-            -DGGML_HIP=ON `
-            -DLLAMA_BUILD_TESTS=OFF `
-            -DBUILD_SHARED_LIBS=ON `
-            -DLLAMA_CURL=OFF `
-            -DGGML_CUDA_FORCE_CUBLAS=OFF `
-            -DGGML_HIP_GRAPHS=ON `
-            -DGGML_CUDA_FORCE_MMQ=ON `
-            -DHIP_PLATFORM=amd `
-            -DLLAMA_BUILD_BORINGSSL=ON
-          cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
-          md "build\bin\rocblas\library\"
-          md "build\bin\hipblaslt\library"
-          cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
-          cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
+        cmake -G "Unix Makefiles" -B build-${{ matrix.exclude_flag }} -S . `
+          -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
+          -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
+          -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.0/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
+          -DCMAKE_BUILD_TYPE=Release `
+          $ALL_FLAGS
 
-      - name: Pack artifacts
-        id: pack_artifacts
-        run: |
-          7z a -snl llama-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
+        cmake --build build-${{ matrix.exclude_flag }} --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          path: llama-bin-win-hip-${{ matrix.name }}-x64.zip
-          name: llama-bin-win-hip-${{ matrix.name }}-x64.zip
+        md "build-${{ matrix.exclude_flag }}\bin\rocblas\library\"
+        md "build-${{ matrix.exclude_flag }}\bin\hipblaslt\library"
+
+        cp "${env:HIP_PATH}\bin\libhipblas.dll" "build-${{ matrix.exclude_flag }}\bin\"
+        cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build-${{ matrix.exclude_flag }}\bin\"
+        cp "${env:HIP_PATH}\bin\rocblas.dll" "build-${{ matrix.exclude_flag }}\bin\"
+
+        cp "${env:HIP_PATH}\bin\rocblas\library\*" "build-${{ matrix.exclude_flag }}\bin\rocblas\library\"
+        cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build-${{ matrix.exclude_flag }}\bin\hipblaslt\library\"
+    - name: Pack artifacts
+      run: |
+        7z a -snl llama-bin-win-hip-${{ matrix.name }}-no-${{ matrix.exclude_flag }}-x64.zip .\build-${{ matrix.exclude_flag }}\bin\*
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v6
+      with:
+        path: llama-bin-win-hip-${{ matrix.name }}-no-${{ matrix.exclude_flag }}-x64.zip
+        name: llama-bin-win-hip-${{ matrix.name }}-no-${{ matrix.exclude_flag }}-x64.zip
 
   release:
     if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
@@ -231,39 +258,33 @@ jobs:
           path: ./artifact
           merge-multiple: true
 
-      - name: Move artifacts
-        id: move_artifacts
+      - name: Merge CPU into HIP variants
         run: |
           mkdir -p release
 
-          echo "Adding CPU backend files to existing zips..."
-          for arch in x64; do
-            cpu_zip="artifact/llama-bin-win-cpu-${arch}.zip"
-            temp_dir=$(mktemp -d)
-            echo "Extracting CPU backend for $arch..."
-            unzip "$cpu_zip" -d "$temp_dir"
+          cpu_zip="artifact/llama-bin-win-cpu-x64.zip"
 
-            echo "Adding CPU files to $arch zips..."
-            for target_zip in artifact/llama-bin-win-*-${arch}.zip; do
-              if [[ "$target_zip" == "$cpu_zip" ]]; then
-                continue
-              fi
-              echo "Adding CPU backend to $(basename "$target_zip")"
-              realpath_target_zip=$(realpath "$target_zip")
-              (cd "$temp_dir" && zip -r "$realpath_target_zip" .)
-            done
+          echo "Extracting CPU once..."
+          cpu_tmp=$(mktemp -d)
+          unzip "$cpu_zip" -d "$cpu_tmp"
 
-            rm -rf "$temp_dir"
+          for hip_zip in artifact/llama-bin-win-hip-*-x64.zip; do
+            echo "Processing $(basename "$hip_zip")"
+
+            tmp_dir=$(mktemp -d)
+            unzip "$hip_zip" -d "$tmp_dir"
+
+            echo "Merging CPU files..."
+            cp -r "$cpu_tmp"/* "$tmp_dir"/
+
+            final_name=$(basename "$hip_zip")
+            zip -r "release/$final_name" -j "$tmp_dir"/*
+
+            rm -rf "$tmp_dir"
           done
 
-          echo "Renaming and moving zips to release..."
-          for zip_file in artifact/llama-bin-win-*.zip; do
-            base_name=$(basename "$zip_file" .zip)
-            zip_name="llama-${{ steps.tag.outputs.name }}-${base_name#llama-}.zip"
-            echo "Moving $zip_file to release/$zip_name"
-            mv "$zip_file" "release/$zip_name"
-          done
-
+          rm -rf "$cpu_tmp"
+          
       - name: Create release
         id: create_release
         uses: ggml-org/action-create-release@v1
@@ -278,8 +299,18 @@ jobs:
 
             </details>
 
+            ### Downloads
+
             - [Windows x64 (CPU)](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cpu-x64.zip)
-            - [Windows x64 (HIP)](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-x64.zip)
+
+            #### HIP Variants (each missing one flag)
+
+            - [no BUILD_SHARED_LIBS](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-BUILD_SHARED_LIBS-x64.zip)
+            - [no LLAMA_CURL](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-LLAMA_CURL-x64.zip)
+            - [no GGML_CUDA_FORCE_CUBLAS](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-GGML_CUDA_FORCE_CUBLAS-x64.zip)
+            - [no GGML_HIP_GRAPHS](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-GGML_HIP_GRAPHS-x64.zip)
+            - [no GGML_CUDA_FORCE_MMQ](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-GGML_CUDA_FORCE_MMQ-x64.zip)
+            - [no HIP_PLATFORM](https://github.com/Kunii/llama.cpp-rocm-gfx120x/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-no-HIP_PLATFORM-x64.zip)
 
       - name: Upload release
         id: upload_release
@@ -302,3 +333,4 @@ jobs:
                 });
               }
             }
+
