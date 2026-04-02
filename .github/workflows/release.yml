@@ -271,18 +271,18 @@ jobs:
           for hip_zip in artifact/llama-bin-win-hip-*-x64.zip; do
             if [[ "$hip_zip" == "$cpu_zip" ]]; then
                   continue
-            
-            echo "Processing $(basename "$hip_zip")"
             fi
             
+            echo "Processing $(basename "$hip_zip")"
+
             tmp_dir=$(mktemp -d)
             unzip "$hip_zip" -d "$tmp_dir"
 
             echo "Merging CPU files..."
-            cp -r "$cpu_tmp"/* "$tmp_dir"/
+            cp -rn "$cpu_tmp"/* "$tmp_dir"/  # -n prevents overwriting HIP files with CPU ones
 
             final_name=$(basename "$hip_zip")
-            zip -r "release/$final_name" -j "$tmp_dir"/*
+            (cd "$tmp_dir" && zip -r "/release/$final_name" .)
 
             rm -rf "$tmp_dir"
           done
