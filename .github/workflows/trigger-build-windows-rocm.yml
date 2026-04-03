@@ -130,10 +130,11 @@ jobs:
             -DGGML_NATIVE=OFF `
             -DGGML_CPU=OFF `
             -DGPU_TARGETS="${{ matrix.gpu_targets }}" `
+            -DCMAKE_HIP_ARCHITECTURES="${{ matrix.gpu_targets }}" `
             -DGGML_HIP_ROCWMMA_FATTN=ON `
             -DGGML_HIP=ON `
-            -DROCM_DIR="${env:HIP_PATH}" `
             -DLLAMA_BUILD_BORINGSSL=ON `
+            -DLLAMA_CURL=OFF `
             ${{ env.ROCM_CMAKE_ARGS }}
           cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
           md "build\bin\rocblas\library\"
