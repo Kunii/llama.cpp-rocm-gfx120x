@@ -19,6 +19,6 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Trigger Windows CPU Build Workflow
+        uses: ./.github/actions/build-windows-cpu.yml
         with:
-          workflow: build-windows-cpu.yml
           inputs: '{ "arch": "${{ github.event.inputs.arch }}" }'
