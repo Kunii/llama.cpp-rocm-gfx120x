@@ -1,7 +1,7 @@
-name: Trigger Windows CPU Build
+name: Windows CPU Build
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual dispatch
     inputs:
       arch:
         description: 'Architecture to build for (x64)'
@@ -9,10 +9,30 @@ on:
         type: choice
         options:
           - x64
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
-  cancel-in-progress: true
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+  push:
+    branches:
+      - master
+    paths: [
+      '.github/workflows/release.yml',
+      '**/CMakeLists.txt',
+      '**/.cmake',
+      '**/*.h',
+      '**/*.hpp',
+      '**/*.c',
+      '**/*.cpp',
+      '**/*.cu',
+      '**/*.cuh',
+      '**/*.swift',
+      '**/*.m',
+      '**/*.metal',
+      '**/*.comp',
+      '**/*.glsl'
+    ]
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
@@ -23,11 +43,45 @@ jobs:
     runs-on: windows-2022
     steps:
       - name: Checkout
-        id: checkout
         uses: actions/checkout@v6
-
-      - name: Trigger Windows CPU Build Workflow
-        uses: ./.github/actions/build-windows-cpu
         with:
-          arch: ${{ github.event.inputs.arch }}
-          CMAKE_ARGS: ${{ env.CMAKE_ARGS }}
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-latest-cpu-${{ inputs.arch }}
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/${{ inputs.arch }}-windows-llvm.cmake ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=${{ inputs.arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DGGML_OPENMP=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        shell: pwsh
+        run: |
+          Copy-Item "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Redist\MSVC\14.44.35112\debug_nonredist\x64\Microsoft.VC143.OpenMP.LLVM\libomp140.x86_64.dll" .\build\bin\Release\
+          7z a -snl llama-bin-win-cpu-x64.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-win-cpu-x64.zip
+          name: llama-bin-win-cpu-x64.zip

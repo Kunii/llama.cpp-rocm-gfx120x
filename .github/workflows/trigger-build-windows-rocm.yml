@@ -1,0 +1,159 @@
+name: Windows ROCm Build
+
+on:
+  workflow_dispatch: # Manual dispatch
+    inputs:
+      arch:
+        description: 'Architecture to build for (x64)'
+        required: true
+        type: choice
+        options:
+          - x64
+      gfx_target:
+        description: 'AMD GPU targets (eg. gfx1200;gfx1201;gfx1100;gfx1101)'
+        required: false
+        default: 'gfx1201'
+      rocm_version:
+        description: 'ROCm version to use specific tag or "latest" to auto-detect'
+        required: false
+        default: 'latest'
+      rocm_cmake_args:
+        description: 'ROCm CMAKE args (eg. -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON)'
+        required: false
+        default: '-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON'
+  workflow_call:
+    inputs:
+      arch:
+        required: true
+        type: string
+      gfx_target:
+        required: true
+        type: string
+      rocm_version:
+        required: true
+        type: string
+      rocm_cmake_args:
+        required: true
+        type: string
+  # push:
+  #   branches:
+  #     - master
+  #   paths: [
+  #     '.github/workflows/build.yml',
+  #     '.github/workflows/build-cmake-pkg.yml',
+  #     '**/CMakeLists.txt',
+  #     '**/.cmake',
+  #     '**/*.h',
+  #     '**/*.hpp',
+  #     '**/*.c',
+  #     '**/*.cpp',
+  #     '**/*.cu',
+  #     '**/*.cuh',
+  #     '**/*.swift',
+  #     '**/*.m',
+  #     '**/*.metal',
+  #     '**/*.comp',
+  #     '**/*.glsl',
+  #     '**/*.wgsl'
+  #   ]
+
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+  ROCM_CMAKE_ARGS: ${{ github.event.inputs.rocm_cmake_args || '-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON' }}
+  GFX_TARGETS: ${{ github.event.inputs.gfx_target || 'gfx1201' }}
+  ROCM_VERSION: ${{ github.event.inputs.rocm_version || 'latest' }}
+
+jobs:
+  trigger-build:
+    runs-on: windows-2022
+
+    env:
+      HIPSDK_INSTALLER_VERSION: "26.Q1"
+
+    strategy:
+      matrix:
+        include:
+          - name: "radeon"
+            gpu_targets: ${{ env:GFX_TARGETS }}
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v6
+
+      - name: Grab rocWMMA package
+        id: grab_rocwmma
+        run: |
+          curl -o rocwmma.deb "https://repo.radeon.com/rocm/apt/7.2.1/pool/main/r/rocwmma-dev/rocwmma-dev_2.2.0.70201-81~24.04_amd64.deb"
+          7z x rocwmma.deb
+          7z x data.tar
+
+      - name: Cache ROCm Installation
+        id: cache-rocm
+        uses: actions/cache@v5
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
+
+      - name: Setup ROCm
+        if: steps.cache-rocm.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-setup-rocm
+        with:
+          version: ${{ env:HIPSDK_INSTALLER_VERSION }}
+
+      - name: Verify ROCm
+        id: verify
+        run: |
+          # Find and test ROCm installation
+          $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
+          if (-not $clangPath) {
+            Write-Error "ROCm installation not found"
+            exit 1
+          }
+          & $clangPath.FullName --version
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-latest-hip-${{ env:HIPSDK_INSTALLER_VERSION }}-${{ matrix.name }}-x64
+          evict-old-files: 1d
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+      - name: Build
+        id: cmake_build
+        run: |
+          $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
+          $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
+          cmake -G "Unix Makefiles" -B build -S . `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
+            -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.1/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU=OFF `
+            -DGPU_TARGETS="${{ matrix.gpu_targets }}" `
+            -DGGML_HIP_ROCWMMA_FATTN=ON `
+            -DGGML_HIP=ON `
+            -DROCM_DIR="${env:HIP_PATH}" `
+            -DLLAMA_BUILD_BORINGSSL=ON `
+            ${{ env:ROCM_CMAKE_ARGS }}
+          cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
+          md "build\bin\rocblas\library\"
+          md "build\bin\hipblaslt\library"
+          cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
+          cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        run: |
+          7z a -snl llama-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-bin-win-hip-${{ matrix.name }}-x64.zip
+          name: llama-bin-win-hip-${{ matrix.name }}-x64.zip
