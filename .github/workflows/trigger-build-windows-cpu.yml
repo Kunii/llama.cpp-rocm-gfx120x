@@ -1,0 +1,24 @@
+name: Trigger Windows CPU Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Architecture to build for (x64)'
+        required: true
+        type: choice
+        options:
+          - x64
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  trigger-build:
+    runs-on: windows-2022
+    steps:
+      - name: Trigger Windows CPU Build Workflow
+        with:
+          workflow: build-windows-cpu.yml
+          inputs: '{ "arch": "${{ github.event.inputs.arch }}" }'
