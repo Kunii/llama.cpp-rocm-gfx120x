@@ -14,6 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+
 jobs:
   trigger-build:
     runs-on: windows-2022
@@ -25,4 +29,5 @@ jobs:
       - name: Trigger Windows CPU Build Workflow
         uses: ./.github/actions/build-windows-cpu
         with:
-          inputs: '{ "arch": "${{ github.event.inputs.arch }}" }'
+          arch: ${{ github.event.inputs.arch }}
+          CMAKE_ARGS: ${{ env.CMAKE_ARGS }}
